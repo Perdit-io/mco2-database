@@ -1,3 +1,5 @@
+import time
+
 import mysql.connector
 from flask import Flask, jsonify, request
 from mysql.connector import Error
@@ -27,68 +29,66 @@ def get_fragment_node(year):
         return "node3"  # New Movies
 
 
-# --- ROUTE 1: Search (Read Query) ---
-# Demonstrates "Fragmentation Transparency" - User doesn't know where data comes from
+# =====================================================
+#  FEATURE 1: STANDARD CRUD (View & Add Movies)
+# =====================================================
+
+
 @app.route("/movies", methods=["GET"])
 def get_movies():
     year_filter = request.args.get("year")
 
-    # 1. Router Logic
+    # Router Logic
     if year_filter:
         target_node = get_fragment_node(year_filter)
-        print(f"Routing query for year {year_filter} to {target_node}")
     else:
-        # If no year is specified, we must query Node 1 (Central) to get everything
-        target_node = "node1"
-        print("No year specified. Routing to Central Node 1.")
+        target_node = "node1"  # Default to Central
 
-    # 2. Execute Query
+    # Execute Query
     conn = get_db_connection(target_node)
     if not conn:
         return jsonify({"error": f"Failed to connect to {target_node}"}), 500
 
-    cursor = conn.cursor(dictionary=True)
-    query = "SELECT * FROM movies"
+    try:
+        cursor = conn.cursor(dictionary=True)
+        query = "SELECT * FROM movies"
+        if year_filter:
+            query += f" WHERE year = {year_filter}"
+        query += " LIMIT 100"
 
-    # Add filtering if needed
-    if year_filter:
-        query += f" WHERE year = {year_filter}"
+        cursor.execute(query)
+        results = cursor.fetchall()
+        cursor.close()
+        conn.close()
 
-    query += " LIMIT 100"  # Safety limit
-
-    cursor.execute(query)
-    results = cursor.fetchall()
-    cursor.close()
-    conn.close()
-
-    return jsonify({"source_node": target_node, "data": results})
+        return jsonify({"source_node": target_node, "data": results})
+    except Error as e:
+        return jsonify({"error": str(e)}), 500
 
 
-# --- ROUTE 2: Insert (Write Query with Replication) ---
-# Demonstrates "Update-Anywhere" & Synchronous Replication
 @app.route("/movies", methods=["POST"])
 def add_movie():
+    # This handles "Update-Anywhere" Replication
     data = request.json
-    movie_id = data.get("id")
-    title = data.get("title")
     year = int(data.get("year"))
-    rating = data.get("rating")
-    genre = data.get("genre")
 
-    # 1. Determine Target Nodes
-    # We must write to Central (Node 1) AND the correct Fragment (Node 2 or 3)
-    fragment_node_name = get_fragment_node(year)
-    nodes_to_update = ["node1", fragment_node_name]
+    # 1. Determine Target Nodes (Central + Fragment)
+    fragment_node = get_fragment_node(year)
+    nodes_to_update = ["node1", fragment_node]
 
-    print(f"Replicating insert to: {nodes_to_update}")
-
-    # 2. Execute Distributed Transaction
     success_count = 0
     errors = []
 
     query = "INSERT INTO movies (id, title, year, rating, genre) VALUES (%s, %s, %s, %s, %s)"
-    vals = (movie_id, title, year, rating, genre)
+    vals = (
+        data.get("id"),
+        data.get("title"),
+        year,
+        data.get("rating"),
+        data.get("genre"),
+    )
 
+    # 2. Replicate to both
     for node in nodes_to_update:
         conn = get_db_connection(node)
         if conn:
@@ -104,25 +104,75 @@ def add_movie():
         else:
             errors.append(f"{node} Connection Failed")
 
-    # 3. Response logic
     if success_count == 2:
         return jsonify(
             {"status": "success", "message": "Replicated to both nodes"}
         ), 201
-    elif success_count == 1:
-        # This is where you'd implement "Recovery" logic later (Case #1)
-        return jsonify(
-            {
-                "status": "partial_success",
-                "message": "Written to 1 node only",
-                "errors": errors,
-            }
-        ), 206
     else:
-        return jsonify({"status": "failure", "errors": errors}), 500
+        return jsonify({"status": "partial_error", "errors": errors}), 206
 
 
-# --- MAIN ---
+# =====================================================
+#  FEATURE 2: CONCURRENCY EXPERIMENTS (Simulation)
+# =====================================================
+
+
+@app.route("/transaction", methods=["POST"])
+def execute_transaction():
+    data = request.json
+    year = int(data.get("year", 2000))
+    action = data.get("action")
+    isolation_level = data.get("isolation_level", "READ COMMITTED")
+    sleep_time = data.get("sleep", 0)
+
+    # Route to correct node
+    node_name = get_fragment_node(year)
+    conn = get_db_connection(node_name)
+
+    if not conn:
+        return jsonify({"error": "Connection failed"}), 500
+
+    results = None
+    try:
+        cursor = conn.cursor(dictionary=True)
+
+        # 1. Set Isolation Level
+        cursor.execute(f"SET SESSION TRANSACTION ISOLATION LEVEL {isolation_level}")
+
+        # 2. Start Transaction
+        conn.start_transaction()
+        print(f"[{node_name}] Transaction Started ({isolation_level})...")
+
+        if action == "read":
+            cursor.execute("SELECT * FROM movies WHERE year = %s LIMIT 1", (year,))
+            results = cursor.fetchall()
+            if sleep_time > 0:
+                time.sleep(sleep_time)  # Simulate holding shared lock
+
+        elif action == "write":
+            new_rating = data.get("rating")
+            # This UPDATE will trigger an Exclusive Lock on the row
+            cursor.execute(
+                "UPDATE movies SET rating = %s WHERE year = %s LIMIT 1",
+                (new_rating, year),
+            )
+            if sleep_time > 0:
+                time.sleep(sleep_time)  # Simulate holding exclusive lock
+
+        # 3. Commit
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return jsonify({"status": "success", "node": node_name, "data": results})
+
+    except Error as e:
+        print(f"Transaction Error: {e}")
+        if conn.is_connected():
+            conn.rollback()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 if __name__ == "__main__":
     # Run on 0.0.0.0 so it is accessible from the outside world
-    app.run(host="0.0.0.0", port=80)
+    # Run on Port 80
+    app.run(host="0.0.0.0", port=80, threaded=True)
