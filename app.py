@@ -132,6 +132,8 @@ def execute_transaction():
     if not conn:
         return jsonify({"error": "Connection failed"}), 500
 
+    conn.autocommit = False
+
     results = None
     try:
         cursor = conn.cursor(dictionary=True)
@@ -166,6 +168,9 @@ def execute_transaction():
                     "UPDATE movies SET rating = %s WHERE year = %s LIMIT 1",
                     (new_rating, year),
                 )
+
+            rows_affected = cursor.rowcount
+            print(f"[{node_name}] Rows affected/locked: {rows_affected}")
 
             if sleep_time > 0:
                 print(f"Sleeping for {sleep_time}s (holding lock)...")
