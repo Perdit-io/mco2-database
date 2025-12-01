@@ -151,13 +151,25 @@ def execute_transaction():
 
         elif action == "write":
             new_rating = data.get("rating")
-            # This UPDATE will trigger an Exclusive Lock on the row
-            cursor.execute(
-                "UPDATE movies SET rating = %s WHERE year = %s LIMIT 1",
-                (new_rating, year),
-            )
+            target_id = data.get("id")  # <--- NEW: Accept specific ID
+
+            if target_id:
+                # Strict collision test: Update specific ID
+                print(f"Updating specific ID: {target_id}")
+                cursor.execute(
+                    "UPDATE movies SET rating = %s WHERE id = %s",
+                    (new_rating, target_id),
+                )
+            else:
+                # Loose test: Update any movie in that year (Existing logic)
+                cursor.execute(
+                    "UPDATE movies SET rating = %s WHERE year = %s LIMIT 1",
+                    (new_rating, year),
+                )
+
             if sleep_time > 0:
-                time.sleep(sleep_time)  # Simulate holding exclusive lock
+                print(f"Sleeping for {sleep_time}s (holding lock)...")
+                time.sleep(sleep_time)
 
         # 3. Commit
         conn.commit()
