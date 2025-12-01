@@ -125,4 +125,4 @@ def add_movie():
 # --- MAIN ---
 if __name__ == "__main__":
     # Run on 0.0.0.0 so it is accessible from the outside world
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=80)
