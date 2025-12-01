@@ -217,7 +217,48 @@ def recover_node():
 
 
 # =====================================================
-#  FEATURE 3: CONCURRENCY EXPERIMENTS (Simulation)
+#  FEATURE 3: CLEANUP ROUTE (For Testing)
+# =====================================================
+@app.route("/movies", methods=["DELETE"])
+def delete_movie():
+    movie_id = request.args.get("id")
+    year = request.args.get("year")
+
+    if not movie_id or not year:
+        return jsonify({"error": "ID and Year required"}), 400
+
+    # Determine nodes
+    fragment_node = get_fragment_node(year)
+    nodes_to_update = ["node1", fragment_node]
+
+    deleted_count = 0
+
+    for node in nodes_to_update:
+        conn = get_db_connection(node)
+        if conn:
+            try:
+                cursor = conn.cursor()
+                # Delete from movies table
+                cursor.execute("DELETE FROM movies WHERE id = %s", (movie_id,))
+                conn.commit()
+
+                # Also clean up logs if any exist for this node
+                cursor.execute(
+                    "DELETE FROM recovery_log WHERE target_node = %s", (node,)
+                )
+                conn.commit()
+
+                deleted_count += 1
+                cursor.close()
+                conn.close()
+            except Error as e:
+                print(f"Delete failed on {node}: {e}")
+
+    return jsonify({"status": "deleted", "nodes_affected": deleted_count})
+
+
+# =====================================================
+#  FEATURE 4: CONCURRENCY EXPERIMENTS (Simulation)
 # =====================================================
 
 
